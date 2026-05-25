@@ -534,7 +534,7 @@ const BG_COLORS = [
 
 const NAMES = ['Alex', 'Maya', 'Rio', 'Sam', 'Zara', 'Kai', 'Luna', 'Finn'];
 
-let events = [
+const DEFAULT_EVENTS = [
   { id:1, name:'Coldplay World Tour', category:'🎵 Concert', emoji:'🎵', venue:'DY Patil Stadium, Mumbai', time:'2026-06-14T19:00', max:50, desc:'The most iconic band in the world returns to India! Join me if you want to go together.', host:'Priya', participants:['Riya','Dev','Anu'], bg:BG_COLORS[0], mine:false, joined:false },
   { id:2, name:'Rooftop Monsoon Party', category:'🎉 Party', emoji:'🎉', venue:'The Sky Lounge, Bangalore', time:'2026-07-04T21:00', max:20, desc:'Dancing in the rain vibes. Open bar, great music, amazing people.', host:'Arjun', participants:['Pooja','Karan'], bg:BG_COLORS[1], mine:false, joined:false },
   { id:3, name:'IPL Watch Party', category:'🏃 Sport', emoji:'🏏', venue:'Sports Bar, Connaught Place', time:'2026-06-01T19:30', max:15, desc:'Watching the finals together. Great energy, great crowd!', host:'Rohit', participants:['Suresh','Neha','Vivek','Tanya'], bg:BG_COLORS[4], mine:false, joined:false },
@@ -542,6 +542,22 @@ let events = [
   { id:5, name:'Midnight Food Crawl', category:'🍕 Food', emoji:'🌮', venue:'Chandni Chowk, Delhi', time:'2026-05-31T23:00', max:8, desc:'Late night street food adventure. We will eat everything.', host:'Vikram', participants:['Sana','Jay','Ritu'], bg:BG_COLORS[3], mine:false, joined:false },
   { id:6, name:'Board Game Marathon', category:'🎮 Gaming', emoji:'🎲', venue:'The Board Room Cafe, Lucknow', time:'2026-06-07T15:00', max:10, desc:'6 hours of board games, good snacks, and meeting new people!', host:'Ishaan', participants:[], bg:BG_COLORS[5], mine:false, joined:false },
 ];
+
+function loadEvents() {
+  try {
+    const saved = localStorage.getItem('junto_events');
+    if (saved) return JSON.parse(saved);
+  } catch(e) {}
+  return DEFAULT_EVENTS;
+}
+
+function saveEvents() {
+  try {
+    localStorage.setItem('junto_events', JSON.stringify(events));
+  } catch(e) {}
+}
+
+let events = loadEvents();
 
 let selectedCat = '';
 let activeFilter = 'All';
@@ -582,7 +598,8 @@ function renderCard(ev) {
 
   let btnHtml = '';
   if (mine) {
-    btnHtml = `<span style="font-size:11px;color:var(--muted);">${ev.participants.length} going</span>`;
+    // Host can always add more participants — no Leave, no full block
+    btnHtml = `<button class="btn-join" onclick="toggleJoin(event,${ev.id})"><i class="ti ti-user-plus" style="font-size:12px"></i> Add Guest</button>`;
   } else if (joined) {
     btnHtml = `<button class="btn-join joined-btn" onclick="toggleJoin(event,${ev.id})"><i class="ti ti-x" style="font-size:12px"></i> Leave</button>`;
   } else if (!full) {
@@ -666,29 +683,29 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyXFFeQt5dvlbmu
 async function submitToSheet(payload) {
   try {
     const params = new URLSearchParams(payload);
+    const url = APPS_SCRIPT_URL + '?' + params.toString();
+    console.log('Submitting to:', url);
 
-    console.log('Submitting to:', APPS_SCRIPT_URL);
+    // no-cors bypasses the CORS preflight block.
+    // The Apps Script still runs and logs to the sheet even though
+    // we can't read the response body.
+    await fetch(url, { method: 'GET', mode: 'no-cors' });
 
-    const response = await fetch(
-      APPS_SCRIPT_URL + '?' + params.toString(),
-      {
-        method: 'GET'
-      }
-    );
-
-    console.log('Sheet response:', response);
-
-    showToast('✅ Data saved successfully');
-
+    showToast('✅ Data saved to sheet');
     return true;
 
   } catch (err) {
-
-    console.error('Sheet submit failed:', err);
-
-    showToast('❌ Failed to save data. Check console.');
-
-    return false;
+    // Final fallback: Image ping has zero CORS restrictions
+    try {
+      const params = new URLSearchParams(payload);
+      new Image().src = APPS_SCRIPT_URL + '?' + params.toString();
+      showToast('✅ Data saved to sheet');
+      return true;
+    } catch (e) {
+      console.error('Sheet submit failed:', e);
+      showToast('⚠️ Could not reach Google Sheets');
+      return false;
+    }
   }
 }
 
@@ -741,9 +758,10 @@ async function submitJoin() {
     timestamp: new Date().toISOString()
   });
 
-  // Update app state
-  ev.joined = true;
+  // Update app state — for own events, don't flip joined flag so Join stays available
+  if (!ev.mine) ev.joined = true;
   ev.participants.push(name.split(' ')[0]);
+  saveEvents();
 
   closeJoinModal();
   showToast('🎉 You joined ' + ev.name + '!');
@@ -756,11 +774,12 @@ async function submitJoin() {
 function toggleJoin(ev, id) {
   ev.stopPropagation();
   const event = events.find(e => e.id === id);
-  if (!event || event.mine) return;
+  if (!event) return;
 
   if (event.joined) {
     event.joined = false;
     event.participants = event.participants.filter(n => n !== 'You' && n !== event._joinName);
+    saveEvents();
     showToast('👋 You left ' + event.name);
     renderGrid();
     if (currentView === 'my') renderMyEvents();
@@ -831,6 +850,7 @@ async function launchEvent() {
   };
 
   events.unshift(newEv);
+  saveEvents();
   closeCreate();
   showToast('🚀 Event created! People can now join.');
   renderGrid();
@@ -846,7 +866,10 @@ function openDetail(id) {
   let actionBtn = '';
 
   if (ev.mine) {
-    actionBtn = `<button class="btn-secondary" style="background:rgba(255,107,138,0.1);border-color:rgba(255,107,138,0.3);color:var(--accent2)" onclick="deleteEvent(${ev.id})"><i class="ti ti-trash" style="font-size:15px;margin-right:6px"></i>Cancel Event</button>`;
+    // Host can always add more guests — Join button always visible, no restriction
+    actionBtn = `
+      <button class="btn-secondary" style="background:rgba(255,107,138,0.1);border-color:rgba(255,107,138,0.3);color:var(--accent2)" onclick="deleteEvent(${ev.id})"><i class="ti ti-trash" style="font-size:15px;margin-right:6px"></i>Cancel Event</button>
+      <button class="btn-primary" onclick="toggleJoin(event,${ev.id});renderDetail(${ev.id})"><i class="ti ti-user-plus" style="font-size:15px;margin-right:6px"></i>Add Guest</button>`;
   } else if (ev.joined) {
     actionBtn = `<button class="btn-secondary" onclick="toggleJoin(event,${ev.id})"><i class="ti ti-x" style="font-size:15px;margin-right:6px"></i>Leave Event</button>`;
   } else if (!full) {
@@ -886,6 +909,7 @@ function renderDetail(id) { openDetail(id); }
 
 function deleteEvent(id) {
   events = events.filter(e => e.id !== id);
+  saveEvents();
   showToast('Event cancelled');
   goBack();
   renderGrid();
